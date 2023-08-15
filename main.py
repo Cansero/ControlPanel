@@ -1,13 +1,12 @@
 import threading
-import gspread
-from datetime import datetime
+import sys
+
 import pandas as pd
-from time import sleep
-from PySide6.QtWidgets import QTableView, QApplication, QMainWindow, QHBoxLayout, QPushButton, QWidget, QVBoxLayout, \
-    QLabel, QLineEdit
-from table_content import TableContent
+from PySide6 import QtGui
+from PySide6.QtWidgets import QTableView, QApplication, QMainWindow, QWidget, QAbstractItemDelegate
 
 from ffautomation import *
+from table_content import TableContent
 from win_utils import *
 
 time = {
@@ -15,9 +14,11 @@ time = {
     'continue': True,
     'update_time': 30
 }
+
 today = datetime.today().strftime('%Y-%m-%d')
 month = datetime.today().strftime('%Y-%m')
 gc = gspread.oauth(
+
     credentials_filename='Credentials/credentials.json',
     authorized_user_filename='Credentials/authorized_user.json'
 )
@@ -31,11 +32,12 @@ class MainWindow(QMainWindow):
         self.setMinimumSize(1000, 600)
 
         self.data = None
-        self.data_df = None  # pd.DataFrame(self.data)
+        self.data_df = None
         self.table = QTableView()
         self.table.horizontalHeader().setStretchLastSection(True)
         self.table.setAlternatingRowColors(True)
         self.table.setSelectionBehavior(QTableView.SelectRows)
+        self.table.doubleClicked.connect(self.select_cells)
 
         main_layout = QHBoxLayout()
         main_layout.addWidget(self.table)
@@ -75,6 +77,9 @@ class MainWindow(QMainWindow):
 
         options_layout.addLayout(receiving_lay)
 
+        self.terminal = QTextEdit()
+        options_layout.addWidget(self.terminal)
+
         main_layout.addLayout(options_layout)
         main_layout.setStretchFactor(self.table, 2)
         main_layout.setStretchFactor(options_layout, 1)
@@ -82,8 +87,24 @@ class MainWindow(QMainWindow):
         widget.setLayout(main_layout)
         self.setCentralWidget(widget)
 
+        sys.stdout = EmittingStream(textWritten=self.normal_output_written)
         start_updating(self)
         # End __init__
+
+    def select_cells(self, i):
+        """
+        Adds to from_line and to_line the info of the doubleClicked cell.
+        It will write first into from_line. If from_line already has a value, will write into to_line.
+        If both fields contain values or only to_line has a value, will write into from_line and clear to_line
+        """
+        cell = self.data_df.iloc[i.row(), i.column()]
+        if not self.from_line.text() and not self.to_line.text():
+            self.from_line.setText(cell)
+        elif self.from_line.text() and not self.to_line.text():
+            self.to_line.setText(cell)
+        else:
+            self.from_line.setText(cell)
+            self.to_line.clear()
 
     def set_table(self):
         df_test = self.data_df[self.data_df['DATE'] == today]
@@ -98,11 +119,14 @@ class MainWindow(QMainWindow):
                     stop_point = i
                     break
         df = self.data_df
+        df['INBOUND USED'] = df['INBOUND USED'].astype(str)
         df = df.loc[:stop_point]
+        self.data_df = df
         self.table.setModel(TableContent(df))
         index = self.table.model().index(stop_point - 2, 0)
         sleep(0.1)  # ? For some reason the table does not scroll without this
         self.table.scrollTo(index)
+        self.table.resizeRowsToContents()
 
     def set_sec_table(self):
         """
@@ -138,9 +162,11 @@ class MainWindow(QMainWindow):
         df.index += 2
         self.data_df = df
         self.sec_df = df
+        return
 
     def enable_receive(self, state):
         self.receive_button.setEnabled(state)
+        return
 
     def receive_table(self):
 
@@ -194,21 +220,24 @@ class MainWindow(QMainWindow):
             self.sec_df = pd.DataFrame()
             self.set_sec_table()
 
-        dlg = CustomDialog(parent=self, text=text)
-        dlg.exec()
+        print(datetime.now(), ': ', text)
+        return
+
+    def normal_output_written(self, text):
+        cursor = self.terminal.textCursor()
+        cursor.movePosition(QtGui.QTextCursor.End)
+        cursor.insertText(text)
+        self.terminal.setTextCursor(cursor)
+        self.terminal.ensureCursorVisible()
+        return
 
     def closeEvent(self, event):
         cancel_sync()
+        return
 
 
-# def checkupdate(window):
-#     while not state:
-#         sleep(5)
-#         df = gc.open('FF File').sheet1.get_all_records()
-#         if df != window.getdata:
-#             window.changelabel('Update: !')
-#             window.setdata(df)
-#     window.changelabel('Not sync')
+# End Main
+
 
 def checkupdate(window):
     buffalo = gc.open('BUFFALO WAREHOUSE').worksheet(month)
@@ -227,16 +256,18 @@ def checkupdate(window):
             if df != window.getdata:
                 window.setdata(df)
             time['time_left'] = time['update_time']
-    # window.changelabel('Not sync')
+    return
 
 
 def cancel_sync():
     time['continue'] = False
+    return
 
 
 def start_updating(window):
     x = threading.Thread(target=checkupdate, args=(window,))
     x.start()
+    return
 
 
 if __name__ == "__main__":
