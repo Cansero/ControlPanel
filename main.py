@@ -3,7 +3,8 @@ import sys
 
 import pandas as pd
 from PySide6 import QtGui
-from PySide6.QtWidgets import QTableView, QApplication, QMainWindow, QWidget, QAbstractItemDelegate
+from PySide6.QtGui import QAction
+from PySide6.QtWidgets import QTableView, QApplication, QMainWindow, QWidget
 
 from ffautomation import *
 from table_content import TableContent
@@ -17,8 +18,8 @@ time = {
 
 today = datetime.today().strftime('%Y-%m-%d')
 month = datetime.today().strftime('%Y-%m')
-gc = gspread.oauth(
 
+gc = gspread.oauth(
     credentials_filename='Credentials/credentials.json',
     authorized_user_filename='Credentials/authorized_user.json'
 )
@@ -31,6 +32,13 @@ class MainWindow(QMainWindow):
         self.setWindowTitle('FF Control Panel')
         self.setMinimumSize(1000, 600)
 
+        # Menybar for testing
+        menu = self.menuBar()
+        test = QAction('Test', self)
+        test.triggered.connect(self.test)
+        menu.addAction(test)
+
+        # Main Table
         self.data = None
         self.data_df = None
         self.table = QTableView()
@@ -42,7 +50,22 @@ class MainWindow(QMainWindow):
         main_layout = QHBoxLayout()
         main_layout.addWidget(self.table)
 
+        # Side Layout
         options_layout = QVBoxLayout()
+
+        # Update Layout
+        update = QHBoxLayout()
+        self.update_label = QLabel('Not sync')
+        self.update_button = QPushButton('Update')
+        self.update_button.clicked.connect(self.update_button_clicked)
+        self.toggle_update = QPushButton('Cancel Sync')
+        self.toggle_update.setEnabled(False)
+        self.toggle_update.clicked.connect(self.toggle_update_state)
+
+        update.addWidget(self.update_label)
+        update.addWidget(self.update_button)
+        update.addWidget(self.toggle_update)
+        options_layout.addLayout(update)
 
         receiving_lay = QHBoxLayout()
         receiving_info = QVBoxLayout()
@@ -77,7 +100,9 @@ class MainWindow(QMainWindow):
 
         options_layout.addLayout(receiving_lay)
 
+        # Terminal
         self.terminal = QTextEdit()
+        self.terminal.setReadOnly(True)
         options_layout.addWidget(self.terminal)
 
         main_layout.addLayout(options_layout)
@@ -87,9 +112,13 @@ class MainWindow(QMainWindow):
         widget.setLayout(main_layout)
         self.setCentralWidget(widget)
 
+        # Print to terminal
         sys.stdout = EmittingStream(textWritten=self.normal_output_written)
-        start_updating(self)
+        self.updating = start_updating(self)
         # End __init__
+
+    def test(self):
+        print(self.updating.is_alive())
 
     def select_cells(self, i):
         """
@@ -123,10 +152,10 @@ class MainWindow(QMainWindow):
         df = df.loc[:stop_point]
         self.data_df = df
         self.table.setModel(TableContent(df))
+        self.table.resizeRowsToContents()
         index = self.table.model().index(stop_point - 2, 0)
         sleep(0.1)  # ? For some reason the table does not scroll without this
         self.table.scrollTo(index)
-        self.table.resizeRowsToContents()
 
     def set_sec_table(self):
         """
@@ -134,8 +163,6 @@ class MainWindow(QMainWindow):
         Packages are all that don't have Reference and are not N/A.
         If 'RCVD' found on notes, all packages below the last 'RCVD' which meet the previous requirements.
         """
-        # ! Error when table is empty
-
         df = self.sec_df
         if not df.empty:
             df = df[df['DATE'] == today]
@@ -151,6 +178,7 @@ class MainWindow(QMainWindow):
 
         self.sec_df = df
         self.to_receive.setModel(TableContent(df))
+        return
 
     @property
     def getdata(self):
@@ -168,11 +196,23 @@ class MainWindow(QMainWindow):
         self.receive_button.setEnabled(state)
         return
 
+    def enable_update(self, state):
+        self.toggle_update.setEnabled(state)
+        return
+
+    def update_button_clicked(self):
+        self.set_table()
+        self.set_sec_table()
+        self.set_label('Status: ~')
+
     def receive_table(self):
-
-        # ! Too much repeated code | Kinda hard to read even for me xd
-
+        """
+        Receives packages. If both from_line and to_line contains values, uses that information. Values should
+        come from 'INBOUND USED'. If only one field contains information, while use info from to_receive only if its
+        not empty.
+        """
         text = ''
+        erase_table = False
         if self.from_line.text() and self.to_line.text():
             start_from, ends_in = self.from_line.text(), self.to_line.text()
             self.from_line.clear()
@@ -186,42 +226,46 @@ class MainWindow(QMainWindow):
 
             df = df.loc[start_from:ends_in, 'INBOUND USED':'BOX ID']
             tracking, nship = df['INBOUND USED'].tolist(), df['BOX ID'].tolist()
-            packages_nship = [[A, B] for A, B in zip(tracking, nship)]
-            repeated, holds, problems, not_found = receiving(packages_nship, 0.1)
 
-            dictionary = {"Repeated": repeated, "Holds": holds, "Problems": problems, "Not found": not_found}
-            for category in dictionary:
-                if dictionary[category]:
-                    text += "{}:\n".format(category)
-                    for value in dictionary[category]:
-                        text += value + '\n'
-            if not text:
-                text += 'All packages found'
-
-        elif self.from_line.text() or self.to_line.text():
-            self.from_line.clear()
-            self.to_line.clear()
-            text = 'No correct data to receive'
+        elif self.sec_df.empty:
+            return
 
         else:
             tracking, nship = self.sec_df['INBOUND USED'].tolist(), self.sec_df['BOX ID'].tolist()
-            packages_nship = [[A, B] for A, B in zip(tracking, nship)]
-            repeated, holds, problems, not_found = receiving(packages_nship, 0.1)
+            erase_table = True
 
-            dictionary = {"Repeated": repeated, "Holds": holds, "Problems": problems, "Not found": not_found}
-            for category in dictionary:
-                if dictionary[category]:
-                    text += "{}:\n".format(category)
-                    for value in dictionary[category]:
-                        text += value + '\n'
-            if not text:
-                text += 'All packages found'
+        packages_nship = [[A, B] for A, B in zip(tracking, nship)]
+        repeated, holds, problems, not_found = receiving(packages_nship, 0.1)
 
+        dictionary = {"Repeated": repeated, "Holds": holds, "Problems": problems, "Not found": not_found}
+        for category in dictionary:
+            if dictionary[category]:
+                text += "{}:\n".format(category)
+                for value in dictionary[category]:
+                    text += value + '\n'
+        if not text:
+            text += 'All packages found'
+
+        if erase_table:
             self.sec_df = pd.DataFrame()
             self.set_sec_table()
 
         print(datetime.now(), ': ', text)
         return
+
+    def set_label(self, text):
+        self.update_label.setText(text)
+        return
+
+    def toggle_update_state(self):
+        if self.updating.is_alive():
+            cancel_sync()
+            self.toggle_update.setText('Start Sync')
+        else:
+            self.enable_update(False)
+            self.updating = start_updating(self)
+            self.toggle_update.setText('Cancel Sync')
+            time['continue'] = True
 
     def normal_output_written(self, text):
         cursor = self.terminal.textCursor()
@@ -239,13 +283,15 @@ class MainWindow(QMainWindow):
 # End Main
 
 
-def checkupdate(window):
+def checkupdate(window: MainWindow):
     buffalo = gc.open('BUFFALO WAREHOUSE').worksheet(month)
     df = buffalo.get_all_records()
     window.setdata(df)
     window.set_table()
     window.set_sec_table()
     window.enable_receive(True)
+    window.set_label('Status: ~')
+    window.enable_update(True)
 
     while time['continue']:
         if time['time_left'] > 0:
@@ -255,7 +301,9 @@ def checkupdate(window):
             df = buffalo.get_all_records()
             if df != window.getdata:
                 window.setdata(df)
+                window.set_label('Status: !')
             time['time_left'] = time['update_time']
+    window.set_label('Not Sync')
     return
 
 
@@ -267,7 +315,7 @@ def cancel_sync():
 def start_updating(window):
     x = threading.Thread(target=checkupdate, args=(window,))
     x.start()
-    return
+    return x
 
 
 if __name__ == "__main__":
