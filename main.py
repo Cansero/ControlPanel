@@ -335,6 +335,7 @@ class MainWindow(QMainWindow):
 
     def closeEvent(self, event):
         cancel_sync()
+        stop_auto_updating()
         return
 
 
