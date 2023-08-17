@@ -4,7 +4,7 @@ import sys
 import pandas as pd
 from PySide6 import QtGui
 from PySide6.QtGui import QAction
-from PySide6.QtWidgets import QTableView, QApplication, QMainWindow, QWidget
+from PySide6.QtWidgets import QTableView, QApplication, QMainWindow, QWidget, QCheckBox
 
 from ffautomation import *
 from table_content import TableContent
@@ -14,6 +14,11 @@ time = {
     'time_left': 30,
     'continue': True,
     'update_time': 30
+}
+auto_update_time = {
+    'time_left': 5,
+    'continue': True,
+    'update_time': 5
 }
 
 today = datetime.today().strftime('%Y-%m-%d')
@@ -100,6 +105,11 @@ class MainWindow(QMainWindow):
 
         options_layout.addLayout(receiving_lay)
 
+        # Auto_update button
+        self.auto_update_button = QCheckBox('Auto Receive and Update Tables')
+        self.auto_update_button.stateChanged.connect(self.auto_updating)
+        options_layout.addWidget(self.auto_update_button)
+
         # Terminal
         self.terminal = QTextEdit()
         self.terminal.setReadOnly(True)
@@ -115,6 +125,7 @@ class MainWindow(QMainWindow):
         # Print to terminal
         sys.stdout = EmittingStream(textWritten=self.normal_output_written)
         self.updating = start_updating(self)
+        self.is_auto_updating = None
         # End __init__
 
     def test(self):
@@ -266,6 +277,15 @@ class MainWindow(QMainWindow):
             self.updating = start_updating(self)
             self.toggle_update.setText('Cancel Sync')
             time['continue'] = True
+        return
+
+    def auto_updating(self, state):
+        if state == 2:  # Value for checked
+            auto_update_time['continue'] = True
+            self.is_auto_updating = start_auto_updating(self)
+        elif state == 0:  # Value for unchecked
+            stop_auto_updating()
+        return
 
     def normal_output_written(self, text):
         cursor = self.terminal.textCursor()
@@ -295,8 +315,8 @@ def checkupdate(window: MainWindow):
 
     while time['continue']:
         if time['time_left'] > 0:
-            time['time_left'] -= 0.2
             sleep(0.2)
+            time['time_left'] -= 0.2
         else:
             df = buffalo.get_all_records()
             if df != window.getdata:
@@ -316,6 +336,30 @@ def start_updating(window):
     x = threading.Thread(target=checkupdate, args=(window,))
     x.start()
     return x
+
+
+def start_auto_updating(window):
+    x = threading.Thread(target=autoupdate, args=(window,))
+    x.start()
+    return x
+
+
+def stop_auto_updating():
+    auto_update_time['continue'] = False
+
+
+def autoupdate(window: MainWindow):
+    while auto_update_time['continue']:
+        if auto_update_time['time_left'] > 0:
+            sleep(1)
+            auto_update_time['time_left'] -= 1
+        else:
+            if window.update_label.text() == 'Status: !':
+                window.update_button_clicked()
+                sleep(5)
+            window.receive_table()
+            auto_update_time['time_left'] = auto_update_time['update_time']
+    return
 
 
 if __name__ == "__main__":
