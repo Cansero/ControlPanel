@@ -2,6 +2,7 @@ import threading
 import sys
 
 import pandas as pd
+from gspread.utils import rowcol_to_a1
 from PySide6 import QtGui
 from PySide6.QtGui import QAction
 from PySide6.QtWidgets import QTableView, QApplication, QMainWindow, QWidget, QCheckBox
@@ -37,7 +38,10 @@ class MainWindow(QMainWindow):
         self.setWindowTitle('FF Control Panel')
         self.setMinimumSize(1000, 600)
 
-        # Menybar for testing
+        # Connect to spreadsheet
+        self.buffalo = gc.open('BUFFALO WAREHOUSE').worksheet(month)
+
+        # Menubar for testing
         menu = self.menuBar()
         test = QAction('Test', self)
         test.triggered.connect(self.test)
@@ -159,7 +163,6 @@ class MainWindow(QMainWindow):
                     stop_point = i
                     break
         df = self.data_df
-        df['INBOUND USED'] = df['INBOUND USED'].astype(str)
         df = df.loc[:stop_point]
         self.data_df = df
         self.table.setModel(TableContent(df))
@@ -199,6 +202,7 @@ class MainWindow(QMainWindow):
         self.data = df
         df = pd.DataFrame(df)
         df.index += 2
+        df['INBOUND USED'] = df['INBOUND USED'].astype(str)
         self.data_df = df
         self.sec_df = df
         return
@@ -223,7 +227,7 @@ class MainWindow(QMainWindow):
         not empty.
         """
         text = ''
-        erase_table = False
+        comment = False
         if self.from_line.text() and self.to_line.text():
             start_from, ends_in = self.from_line.text(), self.to_line.text()
             self.from_line.clear()
@@ -231,9 +235,9 @@ class MainWindow(QMainWindow):
 
             df = self.data_df
             start_from = df[df['INBOUND USED'] == start_from]
-            start_from = start_from.index[0] - 2 if len(start_from) == 1 else start_from.iloc[-1].index
+            start_from = start_from.index[0] if len(start_from) == 1 else start_from.iloc[-1].index
             ends_in = df[df['INBOUND USED'] == ends_in]
-            ends_in = ends_in.index[0] - 2 if len(ends_in) == 1 else ends_in.iloc[-1].index
+            ends_in = ends_in.index[0] if len(ends_in) == 1 else ends_in.iloc[-1].index
 
             df = df.loc[start_from:ends_in, 'INBOUND USED':'BOX ID']
             tracking, nship = df['INBOUND USED'].tolist(), df['BOX ID'].tolist()
@@ -243,10 +247,10 @@ class MainWindow(QMainWindow):
 
         else:
             tracking, nship = self.sec_df['INBOUND USED'].tolist(), self.sec_df['BOX ID'].tolist()
-            erase_table = True
+            comment = True
 
         packages_nship = [[A, B] for A, B in zip(tracking, nship)]
-        repeated, holds, problems, not_found = receiving(packages_nship, 0.1)
+        repeated, holds, problems, not_found = receiving(packages_nship, 0.5)
 
         dictionary = {"Repeated": repeated, "Holds": holds, "Problems": problems, "Not found": not_found}
         for category in dictionary:
@@ -257,11 +261,45 @@ class MainWindow(QMainWindow):
         if not text:
             text += 'All packages found'
 
-        if erase_table:
-            self.sec_df = pd.DataFrame()
-            self.set_sec_table()
+        if comment:
+            self.rcvd(tracking[-1])
 
-        print(datetime.now(), ': ', text)
+        self.update_file(dictionary)
+        print(datetime.now(), ':\n', text)
+        return
+
+    def rcvd(self, tracking):
+        df = self.data_df
+        index = df[df['INBOUND USED'] == tracking]
+        index = index.index[0] if len(index) == 1 else index.index[-1]
+        a_notation = rowcol_to_a1(index, 6)
+        self.buffalo.update(a_notation, 'RCVD')
+        return
+
+    def update_file(self, values):
+        indexes = []
+        updates = []
+        df = self.data_df
+        for category in values:
+            if values[category]:
+                for value in values[category]:
+                    index = df[df['INBOUND USED'] == value]
+                    index = index.index[0] if len(index) == 1 else index.index[-1]
+                    indexes.append((category, index))
+
+        for message, place in indexes:
+            a_notation = rowcol_to_a1(place, 5)
+            match message:
+                case 'Repeated':
+                    updates.append({'range': a_notation, 'values': [['COMBINED']]})
+                case 'Holds':
+                    updates.append({'range': a_notation, 'values': [['HOLD']]})
+                case 'Problems':
+                    updates.append({'range': a_notation, 'values': [['PROBLEM']]})
+                case 'Not found':
+                    updates.append({'range': a_notation, 'values': [['NOT IN FF']]})
+
+        self.buffalo.batch_update(updates)
         return
 
     def set_label(self, text):
